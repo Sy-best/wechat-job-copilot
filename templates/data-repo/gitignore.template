@@ -1,0 +1,9 @@
+# ⛔ 本数据仓库含个人消息与密钥，永不推云（见 DO_NOT_PUSH.md）
+.env
+ai_provider.env
+_copilot_home.bat
+logs/
+*.json.cache
+image_keys.json
+__pycache__/
+*.pyc

@@ -52,7 +52,10 @@ AI 只用 `BASE_PROMPT` + `GENERIC_EXAMPLES`（完全虚构）生成通用回复
 
 ## 从零建一个数据仓库
 
-```bash
+公开仓库提供 `scripts\init_data_repo.bat`：一键建目录、复制空白模板、生成启动脚本与
+引导 `.env`，已存在的文件一律不覆盖（可重复运行）。等价于下面的手动步骤：
+
+```cmd
 mkdir my-wechat-data && cd my-wechat-data
 mkdir contacts notes logs
 copy <代码仓库>/.env.example .env        # 填 DATA_DIR、WECHAT_DB_DIR、WATCH_CHATS 等
@@ -82,9 +85,13 @@ python -m copilot.main doctor
 
 ## 启动脚本的分工
 
-- 数据仓库的 `start*.bat` / `run.bat`：`DATA_DIR` 指自己、`PYTHONPATH` 指代码仓库、
-  **工作目录切到数据仓库**。这样上游 `wechatauto_logs/` 和自动回复留痕都落在 `logs/`，
-  代码仓库不会被运行时产物污染。
+数据仓库里的脚本由 `scripts\init_data_repo.bat` 从 `templates\data-repo\` 复制生成
+（模板可公开、不含任何个人路径）：
+
+- 数据仓库的 `run.bat` / `start*.bat` / `doctor.bat`：`DATA_DIR` 指自己、
+  `PYTHONPATH` 指代码仓库、**工作目录切到数据仓库**，代码仓库位置记在
+  `_copilot_home.bat`（含本机路径，已 gitignore）。这样上游 `wechatauto_logs/`
+  和自动回复留痕都落在 `logs/`，代码仓库不会被运行时产物污染。
 - 代码仓库的 `start_listener*.bat`：给「不挂数据仓库、直接试跑逻辑」的开源用户用，
   日志退回代码仓库的 `logs/`（gitignore）。
 
