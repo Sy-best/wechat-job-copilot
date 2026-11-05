@@ -1,7 +1,9 @@
-# 密钥与环境
+# 密钥与环境（真实配置在 DATA_DIR/.env 与 DATA_DIR/ai_provider.env，
+# 本仓库只留空白模板 + 注释，以及可选的引导用 DATA_DIR 一行）
 .env
 .env.*
 !.env.example
+ai_provider.env
 
 # Python
 __pycache__/
@@ -17,13 +19,12 @@ _deps/
 *.json.cache
 image_keys.json
 
-# 自动回复留痕（含聊天内容，不进仓库）
+# 运行留痕（含聊天内容；挂了数据仓库时写 DATA_DIR/logs，这里只是零数据模式的兜底）
 logs/
-# 上游库运行日志（含本地库探测信息）
 wechatauto_logs/
 
-# 个人私有数据：求职口径 / 联系人档案 / 风格 few-shot
-# 这些文件只在本地，任何仓库（含私有）都不提交，开源时无需二次脱敏
+# 防回潮：个人数据已全部迁到独立数据仓库，以下规则确保没人把它们塞回代码仓库
+# （仓库里只保留 *.example.md 通用模板）
 copilot/口径包.md
 copilot/examples.md
 copilot/contacts/*.md

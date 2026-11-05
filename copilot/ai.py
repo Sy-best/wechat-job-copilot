@@ -4,9 +4,12 @@
 注意：模型名用 deepseek-flash / deepseek-v4-pro，
 旧别名 deepseek-chat 已被 API 拒绝（2026-10-30 实测）。
 
-回复决策依据（2026-11-03 起）：
-- copilot/口径包.md  固定口径（人工维护，每次触发现读）
-- context.retrieve() 按联系人/消息关键词去找工作目录检索命中行
+回复决策依据（2026-11-05 起，代码/数据分离）：
+- context.load_pack()      DATA_DIR/口径包.md（固定口径，每次触发现读）
+- context.load_examples()  DATA_DIR/examples.md（风格 few-shot）
+- context.load_contact_pack()  DATA_DIR/contacts/<名字>.md
+- context.retrieve()       DATA_DIR/notes 或 JOB_DOCS_DIR 里的关键词命中行
+代码仓库不含任何个人数据；契约见 DATA_CONTRACT.md。
 
 2026-11-04 去 AI 腔改版：抽象要求换成硬约束 + 真人示例 + 连发合并规则。
 2026-11-04 二次改版：口径包策略句被当话术照抄、薪资 few-shot 本身是 HR 腔，
@@ -49,8 +52,8 @@ BASE_PROMPT = """你在替一个真实的人用微信打字回复 HR / 猎头。
 - 每次只取被问到的那一句，不要把整段搬出来。
 """
 
-# few-shot 例子属于个人数据（可能含真实履历），放到 copilot/examples.md（gitignored）；
-# 未配置时用这份完全虚构的通用示例，保证开源仓库不含任何个人信息。
+# few-shot 例子属于个人数据，放在数据仓库的 examples.md；
+# 未挂载数据仓库 / 文件缺失时用这份完全虚构的通用示例，保证代码仓库零个人信息。
 GENERIC_EXAMPLES = """【像人说话的例子 · 照这个语气写】
 对方：可以说一下你的项目经历吗
 回：上家做了 3 年客户端，现在这家做工具链。
@@ -131,16 +134,34 @@ def _system(contact: str, retrieved: str) -> str:
     return "\n".join(parts)
 
 
+# AI 接口（Key / BaseURL / 模型名 / 温度）全部来自数据仓库的 ai_provider.env，
+# 代码仓库只留空白模板 ai_provider.env.example；下面两个公开端点/模型名仅是
+# 「完全没挂数据仓库」时的最后兜底，实际部署一定被配置覆盖，且不含任何密钥。
+_FALLBACK_BASE_URL = "https://api.deepseek.com"
+_FALLBACK_MODEL = "deepseek-flash"
+
 MAX_CONTEXT_MSGS = 10
 
 
 class Replier:
-    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com",
-                 model: str = "deepseek-flash", temperature: float = 0.7):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.temperature = temperature
+    def __init__(self, api_key: str = "", base_url: str = "", model: str = "",
+                 temperature: float | None = None):
+        """接口参数优先取显式入参，其次取数据仓库 ai_provider.env（经 config.SETTINGS）。
+
+        兼容旧键 DEEPSEEK_API_KEY / MODEL；AI_* 优先级更高。
+        """
+        from .config import SETTINGS
+        self.api_key = (api_key or SETTINGS.get("AI_API_KEY")
+                        or SETTINGS.get("DEEPSEEK_API_KEY") or "")
+        self.base_url = (base_url or SETTINGS.get("AI_BASE_URL")
+                         or _FALLBACK_BASE_URL).rstrip("/")
+        self.model = (model or SETTINGS.get("AI_MODEL")
+                      or SETTINGS.get("MODEL") or _FALLBACK_MODEL)
+        raw_temp = temperature if temperature is not None else SETTINGS.get("AI_TEMPERATURE")
+        try:
+            self.temperature = float(raw_temp) if raw_temp not in (None, "") else 0.7
+        except (TypeError, ValueError):
+            self.temperature = 0.7
 
     # ---------- 对外接口 ----------
 
@@ -188,6 +209,10 @@ class Replier:
     def _call(self, msgs: list[dict], max_len: int = 40,
               comma_limit: int = 1, _retry: int = 0,
               retry_hint: str | None = None) -> str:
+        if not self.api_key:
+            raise RuntimeError(
+                "未配置 AI_API_KEY：请在数据仓库的 ai_provider.env 里填写"
+                "（空白模板 ai_provider.env.example 有逐项说明）")
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},

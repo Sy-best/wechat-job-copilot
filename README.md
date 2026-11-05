@@ -7,23 +7,31 @@ HR 加微信后，新消息实时进 Copilot，AI 按你自己的口径生成回
 > 底层读库/发送不是我们做的，价值在业务层：固定口径包、联系人专属档案（防止前后说法矛盾）、
 > 连发合批、去 AI 腔风格守门，以及默认「人工确认」的安全边界。
 
-## 架构
+## 架构：代码仓库 / 数据仓库分离
+
+```
+┌──────────────────────────┐     DATA_DIR（唯一契约）   ┌──────────────────────────┐
+│ 逻辑仓库（本仓库，可公开）│ ───────只读，不写回──────▶ │ 数据仓库（私有，不上云）  │
+│  copilot/*.py / 模板/单测 │                            │  .env / 口径包.md /       │
+│  零个人信息、零硬编码路径 │                            │  examples.md / contacts/ │
+│                          │                            │  notes/ / logs/           │
+└──────────────────────────┘                            └──────────────────────────┘
+```
+
+完整契约见 **[DATA_CONTRACT.md](DATA_CONTRACT.md)**：目录约定、配置加载优先级、
+零数据模式、从零建数据仓库、改代码时的约束。
 
 ```
 微信 4.x PC 客户端（已登录，窗口别关）
    │
    ▼
-┌─────────────────────────────────────────────┐
-│ 适配层 copilot/adapter.py                    │  ← 唯一接触上游库的模块
-│  读: wechatauto-replica 本地库解密 + Listener │
-│  发: guia.quick_send (UIA + OCR 回退)        │
-└─────────────────────────────────────────────┘
+适配层 copilot/adapter.py      ← 唯一接触上游库的模块（本地库解密 + Listener + UIA 发送）
    ▼
-业务层 copilot/main.py（人工确认 / 自动回复护栏 / 队列合批 / 自适应轮询）
+业务层 copilot/main.py        人工确认 / 自动回复护栏 / 队列合批 / 自适应轮询 / doctor
    ▼
-AI 层 copilot/ai.py（DeepSeek + 三层决策依据注入 + 去 AI 腔守门）
+AI 层 copilot/ai.py           DeepSeek + 依据注入 + 去 AI 腔风格守门
    ▼
-上下文 copilot/context.py（口径包 / 联系人档案 / 找工作笔记检索兜底）
+上下文 copilot/context.py     ★ 唯一读取 DATA_DIR 的模块（口径包/档案/示例/语料检索）
 ```
 
 上游依赖 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica)（Apache-2.0），
@@ -33,29 +41,56 @@ AI 层 copilot/ai.py（DeepSeek + 三层决策依据注入 + 去 AI 腔守门）
 
 ## 安装（Windows + Python 3.12）
 
+### 1. 逻辑仓库（代码）
+
 ```bash
-git clone https://github.com/Sy-best/wechat-job-copilot.git && cd wechat-job-copilot
+git clone https://github.com/Sy-best/wechat-job-copilot.git WeChatJobCopilot
+cd WeChatJobCopilot
 git clone --depth 1 --branch v1.2.9 https://github.com/fanyuantaier/wechatauto-replica.git _deps/wechatauto-replica
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\pip install -e ./_deps/wechatauto-replica
-copy .env.example .env              # 至少填 DEEPSEEK_API_KEY
 ```
 
 固定上游 tag 可避免微信客户端升级导致的意外失配；升级时显式改 tag 并回归测试。
 
-### 配置个人数据（可选，强烈建议）
+### 2. 数据仓库（你的私人数据，可选但强烈建议）
 
-三份都是**本地私有数据，已 gitignore**，仓库里只有 `.example` 模板：
+```bash
+mkdir ..\wechat-job-data && cd ..\wechat-job-data
+mkdir contacts notes logs
+copy ..\WeChatJobCopilot\.env.example .env
+copy ..\WeChatJobCopilot\ai_provider.env.example ai_provider.env
+copy ..\WeChatJobCopilot\copilot\口径包.example.md 口径包.md
+copy ..\WeChatJobCopilot\copilot\examples.example.md examples.md
+```
 
-| 文件 | 作用 |
+`.env` 里填 `WECHAT_DB_DIR`、`DATA_DIR`（指向这个数据仓库）；
+**AI 接口单独填在 `ai_provider.env`**：`AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL`。
+代码仓库里只有空白占位模板 + 逐项注释（`ai_provider.env.example`），
+不含任何真实密钥或接口地址；两个 `.env` 文件都要 gitignore。
+兼容任意 OpenAI 格式 `/chat/completions` 端点，换模型/换厂商只改这一个文件。
+
+回代码仓库写一行引导配置 `.env`：`DATA_DIR=D:\path\to\wechat-job-data`，
+或者用环境变量 / 数据仓库的启动脚本传进去。
+
+| 数据文件 | 作用 |
 |---|---|
-| `copilot/口径包.md` | 身份/离职原因/到岗时间/薪资锚点等固定口径，改文件即生效 |
-| `copilot/contacts/<名字>.md` | 单个联系人已说过的话（如已报数字），防止 AI 自相矛盾 |
-| `copilot/examples.md` | 风格 few-shot，按你自己的说话方式举例 |
+| `ai_provider.env` | **AI 接口**：Key / 接口地址 / 模型名；模板 `ai_provider.env.example` 是空白 + 逐项注释 |
+| `.env` | 主配置：微信库路径、监听名单、节流参数、`DATA_DIR` |
+| `口径包.md` | 身份/离职原因/到岗时间/薪资锚点等固定口径，改文件即生效，无需重启 |
+| `contacts/<备注名>.md` | 单个联系人已说过的话（如已报数字），防止 AI 自相矛盾 |
+| `examples.md` | 风格 few-shot，按你自己的说话方式举例 |
+| `notes/*.md` | 可选检索语料；也可用 `JOB_DOCS_DIR` 只读挂外部笔记目录 |
 
-不配也能跑，AI 退化为通用求职礼仪回复。
-`JOB_DOCS_DIR` 指向你的找工作笔记目录时按关键词检索命中行做补充；留空则关闭检索。
+不配数据仓库也能跑（零数据模式），AI 退化为通用求职礼仪回复。
+配完跑一次体检：
+
+```bash
+.venv\Scripts\python -m copilot.main doctor
+```
+
+`doctor` 只报状态，不打印数据内容、密钥或联系人姓名。
 
 ## 使用
 
@@ -63,21 +98,23 @@ copy .env.example .env              # 至少填 DEEPSEEK_API_KEY
 
 | 双击 | 效果 |
 |---|---|
-| `start_listener.bat` | 人工确认模式：`s` 发送 / `e` 编辑 / 回车忽略 |
-| `start_listener_auto.bat` | 自动回复模式（带护栏，见下） |
+| 数据仓库 `start.bat` | 人工确认模式（推荐：配置、日志、数据都在数据仓库） |
+| 数据仓库 `start_auto.bat` | 自动回复模式（带护栏，见下） |
+| 代码仓库 `start_listener.bat` | 零数据模式试跑，日志退回代码仓库的 `logs/` |
 
 命令行：
 
 ```bash
-.venv\Scripts\python -m copilot.main                      # 人工确认（默认）
-.venv\Scripts\python -m copilot.main --auto                # 自动回复
-.venv\Scripts\python -m copilot.main --auto --dry-run      # 演练：只打印不发送
-.venv\Scripts\python -m copilot.main search 关键词          # 查准确昵称 / wxid
-.venv\Scripts\python -m copilot.main read                  # 列出最近会话
-.venv\Scripts\python -m copilot.main read 张三 -n 30 --ai  # 按需读取 + AI 建议（不发送）
+.venv\Scripts\python -m copilot.main doctor                  # 数据/配置体检
+.venv\Scripts\python -m copilot.main                        # 人工确认（默认）
+.venv\Scripts\python -m copilot.main --auto                  # 自动回复
+.venv\Scripts\python -m copilot.main --auto --dry-run        # 演练：只打印不发送
+.venv\Scripts\python -m copilot.main search 关键词            # 查准确昵称 / wxid
+.venv\Scripts\python -m copilot.main read                    # 列出最近会话
+.venv\Scripts\python -m copilot.main read 张三 -n 30 --ai    # 按需读取 + AI 建议（不发送）
 ```
 
-`.env` 的 `WATCH_CHATS` 用逗号/顿号分隔指定监听对象（名字里不能带逗号），
+`WATCH_CHATS` 用逗号/顿号分隔指定监听对象（名字里不能带逗号），
 留空 = 全局监听（自动发现新会话、跳过群聊），新 HR 加你开聊无需改配置。
 
 ### 检测节奏（自适应 tick）
@@ -94,23 +131,23 @@ copy .env.example .env              # 至少填 DEEPSEEK_API_KEY
 
 ### 自动回复护栏
 
-**默认关闭**（`AUTO_SEND=0`）。开启方式：双击 `start_listener_auto.bat`、`--auto`，或 `.env` 设 `AUTO_SEND=1`。
+**默认关闭**（`AUTO_SEND=0`）。开启方式：`--auto`，或 `.env` 设 `AUTO_SEND=1`。
 
 - 每条消息入队，`REPLY_WINDOW`(60s) 内连发合并成一条回复；单条静默 `REPLY_QUIET_FAST`(8s) 即回；两次发送间隔 ≥ 60s
 - 群聊、非文本、空/超 500 字回复、每人每次运行 20 批上限 → 一律转人工并打印建议 + 留痕
 - AI 调用失败有限次重试并整批重新入队，重试耗尽留痕提示人工补回，不静默丢消息
-- 所有自动发送写入 `logs/`（gitignored）；建议先用 `--dry-run` 演练
+- 所有自动发送写入数据仓库的 `logs/`；建议先用 `--dry-run` 演练
 
 ⚠️ 自动回复意味着 AI 生成的内容直接发给 HR，没有人工过目、发出去撤不回。
 **求职号风控优先，除非你清楚自己在做什么，别开全自动。**
 
 ## 回复决策依据
 
-三层依据按优先级注入 system prompt：
+三层依据按优先级注入 system prompt，全部来自数据仓库：
 
 1. **联系人档案** `contacts/<备注名>.md` —— 每个关键联系人的专属口径，优先级最高
 2. **固定口径包** `口径包.md` —— 离职口径/到岗时间/项目数据/薪资锚点/红线，改文件即生效
-3. **实时检索** —— 按联系人名 + 对方消息关键词，去 `JOB_DOCS_DIR` 的 md 文件 grep 命中行兜底
+3. **实时检索** —— 按联系人名 + 对方消息关键词，去 `DATA_DIR/notes` 或 `JOB_DOCS_DIR` 的 md 文件 grep 命中行兜底
 
 笔记里的策略句统一加 **【内部】** 标记并明令「只用来判断，一个字都不能出现在回复里」，
 避免内部口径被模型当成话术照抄。
@@ -127,7 +164,10 @@ copy .env.example .env              # 至少填 DEEPSEEK_API_KEY
 ## 安全边界与隐私
 
 - 消息只在本机读取（解密本地 SQLite），除发给所选大模型 API 的对话片段外不上传任何数据
-- `.env`、聊天留痕日志、口径包、联系人档案、风格示例、解密缓存全部 gitignore
+- **代码仓库零个人数据、零密钥**：真实配置在数据仓库的 `.env` 与 `ai_provider.env`；
+  代码仓库只有空白模板（`.env.example` / `ai_provider.env.example`）和字段注释
+- **AI 接口可插拔**：`AI_BASE_URL` 指向任意 OpenAI 兼容 `/chat/completions` 端点，
+  代码里只保留公开兜底默认值，实际运行时以数据仓库配置为准
 - 只读本地库 + GUI 发送，不注入微信进程、不碰协议层，不提供批量加人/群发/营销能力
 - 发送用 `verify=False` + 本进程已解密的库回读留痕：上游 `verify=True` 会自己探测库目录，
   显式指定 `WECHAT_DB_DIR` 时会「消息已发出却报未确认」。回读失败按已发送处理，避免重复补发
@@ -154,12 +194,15 @@ copy .env.example .env              # 至少填 DEEPSEEK_API_KEY
 copilot/
   adapter.py   微信适配层（上游隔离点 + 自适应 tick）
   ai.py        DeepSeek 回复建议（三层依据 + 风格守门 + 合批）
-  context.py   口径包/联系人档案加载 + 笔记检索
-  main.py      监听 + 回复队列 / 人工确认 / read / search
-  config.py    .env 加载
-tests/         离线单测（无需微信在线）
-_deps/         wechatauto-replica 克隆（不提交）
-logs/          自动回复留痕（不提交）
+  context.py   ★ 唯一数据入口：DATA_DIR -> 口径包/档案/示例/检索
+  config.py    分层 .env 加载（环境变量 > ai_provider.env > 数据仓库 .env > 引导）
+  main.py      监听 + 回复队列 / 人工确认 / read / search / doctor
+  *.example.md 通用模板（虚构内容，可公开）
+.env.example              主配置空白模板 + 注释
+ai_provider.env.example   AI 接口空白模板 + 逐项字段说明（可公开）
+DATA_CONTRACT.md          数据契约（目录约定 / 优先级 / 零数据模式）
+tests/             离线单测（无需微信在线）
+_deps/             wechatauto-replica 克隆（不提交）
 ```
 
 ## 许可证

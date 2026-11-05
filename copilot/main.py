@@ -9,6 +9,10 @@
     python -m copilot.main search 关键词        # 搜索联系人，拿准确昵称 / wxid
     python -m copilot.main read                # 拉取：列出最近会话
     python -m copilot.main read 张三 --ai      # 拉取 + AI 建议（不发送）
+    python -m copilot.main doctor              # 体检：数据仓库/配置/语料是否就位
+
+架构：本仓库只有逻辑代码；所有个人数据（口径包/联系人档案/few-shot/配置/日志）
+都在 DATA_DIR 指向的数据仓库里，见 DATA_CONTRACT.md。
 
 自动模式（队列，2026-11-04 起）：
   每条消息都进队列，绝不丢；同一联系人 REPLY_WINDOW(60s) 内连发的多条
@@ -30,9 +34,10 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from . import context
 from .adapter import WeChatAdapter
 from .ai import Replier
-from .config import load_env, SETTINGS
+from .config import ai_provider_path, load_env, repo_env_path, SETTINGS
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,14 +51,26 @@ except AttributeError:
 _ROOT = Path(__file__).parent.parent
 
 
+def _ai_key() -> str:
+    """AI Key 统一入口：新键 AI_* 优先，兼容旧键 DEEPSEEK_API_KEY。"""
+    return (SETTINGS.get("AI_API_KEY") or SETTINGS.get("DEEPSEEK_API_KEY")
+            or os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or "")
+
+
+def _log_dir() -> Path:
+    """运行留痕属于数据，写数据仓库的 logs/；未挂数据仓库时才退回代码仓库。"""
+    root = context.data_root()
+    return (root / "logs") if root else (_ROOT / "logs")
+
+
 def _auto_logger():
     """自动回复留痕（logging 自带线程锁，后台线程也能安全写）。"""
     lg = logging.getLogger("copilot.autosend")
     lg.setLevel(logging.INFO)
     lg.propagate = False
     if not lg.handlers:
-        d = _ROOT / "logs"
-        d.mkdir(exist_ok=True)
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(d / f"auto_send_{time.strftime('%Y%m%d')}.log",
                                  encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
@@ -398,11 +415,11 @@ def run_read(args: list[str]):
             if not incoming:
                 print("\n(对方暂无文本消息，跳过 AI 建议)")
                 continue
-            api_key = SETTINGS.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+            api_key = _ai_key()
             if not api_key:
-                print("\n(未配置 DEEPSEEK_API_KEY，跳过 AI 建议)")
+                print("\n(未配置 AI_API_KEY：见数据仓库 ai_provider.env，跳过 AI 建议)")
                 continue
-            replier = Replier(api_key=api_key, model=SETTINGS.get("MODEL", "deepseek-flash"))
+            replier = Replier(api_key=api_key)
             print("\n----- AI 建议回复（仅展示，不发送）-----")
             print(replier.suggest(history, incoming, contact=name))
 
@@ -421,8 +438,71 @@ def run_search(args: list[str]):
         print(f"  {h.get('username', ''):<32} {name}")
 
 
+def run_doctor():
+    """代码/数据分离体检：只报状态，不打印数据内容、密钥或联系人姓名。"""
+    load_env()
+    root = context.data_root()
+    print("=== WeChatJobCopilot 体检 ===")
+    print(f"代码仓库 : {_ROOT}")
+
+    if root is None:
+        print("数据仓库 : [未配置] 无个人数据，AI 用内置通用示例兜底")
+        print("           修法：.env 或环境变量里设 DATA_DIR=<数据仓库目录>")
+    else:
+        print(f"数据仓库 : {root}  [{'OK' if root.is_dir() else '目录不存在'}]")
+    repo_env = repo_env_path()
+    print(f"引导配置 : {repo_env}  [{'存在' if repo_env.exists() else '无'}]")
+    if root:
+        data_env = root / ".env"
+        print(f"主配置   : {data_env}  [{'存在' if data_env.exists() else '缺失'}]")
+
+    prov = ai_provider_path()
+    print(f"AI 接口  : {prov or '(数据仓库未挂载)'}  [{'存在' if prov and prov.is_file() else '缺失'}]")
+    print("API Key  : [已配置]" if _ai_key() else
+          "API Key  : [缺失] 见数据仓库 ai_provider.env / 模板 ai_provider.env.example")
+    print(f"接口地址 : {SETTINGS.get('AI_BASE_URL') or '(代码里的公开兜底默认值)'}")
+    print(f"模型     : {SETTINGS.get('AI_MODEL') or SETTINGS.get('MODEL') or '(代码里的公开兜底默认值)'}")
+    print("自动回复 : " + ("开启（注意风控）" if SETTINGS.get("AUTO_SEND", "0").strip() == "1"
+                          else "关闭（人工确认，推荐）"))
+
+    if root:
+        for label, rel in (("口径包", "口径包.md"), ("风格示例", "examples.md")):
+            fp = root / rel
+            ok = fp.is_file()
+            extra = f"  {fp.stat().st_size} 字节" if ok else "（用内置通用兜底）"
+            print(f"{label} : [{'OK' if ok else '缺失'}]{extra}")
+        cdir = root / "contacts"
+        n = 0
+        if cdir.is_dir():
+            n = len([p for p in cdir.glob("*.md") if p.name != "README.md"])
+        print(f"联系人档案 : [{'OK' if cdir.is_dir() else '缺失'}] {n} 份（不列名字）")
+        jd = context.job_dir()
+        if jd and jd.is_dir():
+            print(f"检索语料 : [OK] {jd}  {sum(1 for _ in jd.rglob('*.md'))} 篇 .md")
+        else:
+            print(f"检索语料 : [关闭] {jd or '未配置'}（只用口径包）")
+        print(f"日志目录 : {_log_dir()}")
+
+    wd = SETTINGS.get("WECHAT_DB_DIR", "").strip()
+    ok_wd = bool(wd) and Path(wd).is_dir()
+    print(f"微信库目录 : {wd or '(自动探测)'}  [{'OK' if ok_wd else '未配置或不存在'}]")
+
+    # 回归：代码仓库里不该再有个人数据文件（除通用 .example 模板）
+    leftovers = [p.name for p in (_ROOT / "copilot").glob("*.md")
+                 if not p.name.endswith(".example.md")]
+    cpath = _ROOT / "copilot" / "contacts"
+    if cpath.is_dir():
+        leftovers += [p.name for p in cpath.glob("*.md") if p.name != "README.md"]
+    print("代码仓库残留个人数据 : " +
+          ("⚠ " + ", ".join(leftovers) + "（应迁到数据仓库）" if leftovers else "无 [OK]"))
+    print("\n契约文档: DATA_CONTRACT.md｜模板: .env.example / copilot/*.example.md")
+
+
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] == "doctor":
+        run_doctor()
+        return
     if argv and argv[0] == "read":
         run_read(argv[1:])
         return
@@ -431,9 +511,10 @@ def main():
         return
 
     load_env()
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    api_key = _ai_key()
     if not api_key:
-        sys.exit("缺少 DEEPSEEK_API_KEY：请复制 .env.example 为 .env 并填入")
+        sys.exit("缺少 AI_API_KEY：请在数据仓库的 ai_provider.env 里填写"
+                 "（空白模板 ai_provider.env.example 有逐项说明）")
 
     flags = {a for a in argv if a.startswith("-")}
     auto = "--auto" in flags or SETTINGS.get("AUTO_SEND", "0").strip() == "1"
@@ -455,7 +536,7 @@ def main():
     reply_window = int(float(SETTINGS.get("REPLY_WINDOW", "60")))
     quiet_fast = int(float(SETTINGS.get("REPLY_QUIET_FAST", "8")))
 
-    replier = Replier(api_key=api_key, model=SETTINGS.get("MODEL", "deepseek-flash"))
+    replier = Replier(api_key=api_key)
     adapter = WeChatAdapter(db_dir=SETTINGS.get("WECHAT_DB_DIR") or None)
 
     cop = Copilot(
@@ -471,6 +552,8 @@ def main():
     if auto:
         cop.start_workers()
     print(f"\n🤖 Copilot 已启动（账号: {adapter.self_name}）")
+    print("数据仓库:", str(context.data_root()) if context.data_root()
+          else "未挂载（无个人数据，AI 用通用示例兜底）")
     print("监听模式:", "指定联系人 " + ", ".join(chats) if chats else "全局（跳过群聊）")
     print(f"⏱ 检测节奏: 对话中 {tick_active:.0f}s / 静默 {tick_idle:.0f}s"
           f"（连续 {tick_window / 60:.0f} 分钟无消息降频；启动先按快档）")
