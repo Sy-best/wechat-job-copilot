@@ -1,0 +1,2 @@
+# 依赖安装说明见 README.md（wechatauto-replica 从本地 _deps 克隆安装）
+requests>=2.31

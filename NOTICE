@@ -1,0 +1,18 @@
+# NOTICE — 第三方依赖与署名
+
+本项目本身采用 MIT 许可证（见 LICENSE）。
+
+微信客户端的读取/发送能力来自以下第三方项目，本项目**不复制、不修改、不再分发其源码**，
+仅在运行时以 Python 依赖方式调用：
+
+- **wechatauto-replica**
+  https://github.com/fanyuantaier/wechatauto-replica
+  License: Apache-2.0
+  用于：微信 4.x 本地 SQLCipher 数据库解密读取、消息增量监听、UIA/OCR 混合发送。
+  建议固定版本 v1.2.9（实测适配微信 4.1.15 / 4.2.0.11）。
+
+- **DeepSeek API**（可选，用户自行配置 key）
+  https://api.deepseek.com
+  用于：生成回复建议。仅发送当前会话的对话片段与用户自己提供的口径笔记。
+
+本项目与腾讯/微信官方无任何关联。微信为腾讯公司的商标。

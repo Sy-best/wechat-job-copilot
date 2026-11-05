@@ -1,0 +1,30 @@
+# 密钥与环境
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+
+# 上游依赖克隆（Apache-2.0，本地安装用，不进本仓库）
+_deps/
+
+# 上游运行缓存（解密密钥缓存等，含敏感信息）
+*.json.cache
+image_keys.json
+
+# 自动回复留痕（含聊天内容，不进仓库）
+logs/
+# 上游库运行日志（含本地库探测信息）
+wechatauto_logs/
+
+# 个人私有数据：求职口径 / 联系人档案 / 风格 few-shot
+# 这些文件只在本地，任何仓库（含私有）都不提交，开源时无需二次脱敏
+copilot/口径包.md
+copilot/examples.md
+copilot/contacts/*.md
+!copilot/contacts/README.md
